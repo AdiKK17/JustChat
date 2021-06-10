@@ -3,166 +3,167 @@ const ChatRoom = require("./models/chatroom");
 const User = require("./models/user");
 
 const CryptoJS = require("crypto-js");
+const { group } = require("console");
+// const { use } = require("./routes/user.route");
 
 const socketEvents = (io) => {
   io.of("/").on("connection", async (socket) => {
-    
     console.log("socket just go connected");
-    // console.log(socket.id);
-    // console.log(socket.handshake.query);
-    // console.log(socket.handshake.query.name);
-    // console.log(Date.now().toString());
     socket.join(socket.handshake.query.userId);
+
     const user = await User.findById(socket.handshake.query.userId)
-      .select("last_seen name email chatRooms messages")
-      .populate("messages chatRooms.room");
-    // .select(["last_seen", "name", "email", "chatRooms"])
-    // .populate("chatRooms.room");
-    console.log(user.messages);
-    let users;
-    let chatrooms = [];
+      .select("-password -__v")
+      .populate({ path: "temp_connections", select: "name email uid" })
+      .populate({
+        path: "temp_chatrooms",
+        select: "users is_group room_name",
+        populate: [{ path: "users", select: "name email uid" }],
+      })
+      .populate({ path: "messages" });
+
+    console.log(user);
 
     if (user.last_seen == null) {
       console.log("A new user");
-      users = await User.find().select("email name");
-      //  console.log(users);
-
-      //sending new user to rest of the connected clients
-      socket.broadcast.emit("receive_new_user", { user: user });
     } else {
       console.log("not a new user");
-      user.chatRooms.forEach((element) => {
-        if (element.createdAt > user.last_seen) {
-          chatrooms.push(element);
-        }
-      });
-      users = await User.find({ createdAt: { $gt: user.last_seen } }).select(
-        "email name"
-      );
-      // console.log(users);
     }
 
-    //sending chatrooms to the client
-    socket.emit("get_chatRooms", { chatrooms: chatrooms });
     //sending users to the client
-    socket.emit("receive_users", { users: users });
-    //sending new messages that were to the user when the user was not connected
-    socket.emit("unreceived_messages", { messages: user.messages });
+    socket.emit("get_users", { users: user.temp_connections });
+    //sending chatrooms to the client
+    socket.emit("get_chatrooms", { chatrooms: user.temp_chatrooms });
+    //sending new messages that were sent to the user when the user was not connected
+    socket.emit("get_messages", { messages: user.messages });
 
-    socket.on("createRoom", async (data, callback) => {
-      let users = [];
-      users.push(socket.handshake.query.userId);
-      users.push(data.user);
-      const room = await ChatRoom.create({
-        users: users,
-      });
-      console.log(room);
-      socket.emit("new_chatroom", {
-        room: room,
-        name: data.name,
-        userId: data.user,
-      });
-      socket
-        .to(data.user)
-        .emit("new_chatroom", {
-          room: room,
-          name: user.name,
-          userId: user._id,
-        });
-      callback("done");
-
-      const otherUser = await User.findById(data.user).select("chatRooms");
-
-      user.chatRooms.push({ room: room, name: data.name, userId: data.user });
-      user.save();
-      otherUser.chatRooms.push({
-        room: room,
+    socket.on("findandadduser", async (data, callback) => {
+      const enduser = await User.findOne({ uid: data.uid });
+      if (!enduser) {
+        callback("done");
+        return;
+      }
+      io.to(enduser.id).emit("new_user", {
         name: user.name,
-        userId: user._id,
+        email: user.email,
+        _id: user._id,
+        uid: user.uid,
       });
-      otherUser.save();
+      io.to(user.id).emit("new_user", {
+        name: enduser.name,
+        email: enduser.email,
+        _id: enduser._id,
+        uid: enduser.uid,
+      });
+
+      let room = await ChatRoom.create({
+        users: [user.id, enduser.id],
+      });
+
+      room = await ChatRoom.populate(room, {
+        path: "users",
+        select: "name email uid",
+      });
+
+      io.to(enduser.id).emit("new_chatroom", {
+        room: room,
+        // name: user.email,
+      });
+      io.to(user.id).emit("new_chatroom", {
+        room: room,
+        // name: enduser.email,
+      });
+
+      callback({
+        name: enduser.name,
+        email: enduser.email,
+        uid: enduser.uid,
+      });
+
+      enduser.temp_chatrooms.push(room);
+      enduser.chatrooms.push(room);
+      enduser.connections.push(user);
+      enduser.temp_connections.push(user);
+      await enduser.save();
+      user.temp_chatrooms.push(room);
+      user.chatrooms.push(room);
+      user.connections.push(enduser);
+      user.temp_connections.push(enduser);
+      await user.save();
     });
 
-    socket.on("createGroupRoom", async (data, callback) => {
-      let users = [];
+    socket.on("creategrouproom", async (data, callback) => {
+      let users = data.users;
       users.push(socket.handshake.query.userId);
-      data.user.forEach((u) => {
-        users.push(u);
-      });
 
-      const room = await ChatRoom.create({
+      let room = await ChatRoom.create({
         users: users,
+        room_name: data.name,
+        is_group: true,
+      });
+      room = await ChatRoom.populate(room, {
+        path: "users",
+        select: "name email uid",
       });
       console.log(room);
 
-      socket.emit("new_chatroom", { room: room, name: data.name });
-      data.user.forEach((u) => {
-        socket.to(u).emit("new_chatroom", { room: room, name: data.name });
-      });
+      users.forEach(async (u) => {
+        io.to(u).emit("new_chatroom", {
+          room: room,
+        });
 
+        await User.updateOne(
+          { _id: u },
+          {
+            $push: { temp_chatrooms: room, chatrooms: room },
+          }
+        );
+      });
       callback("done");
-
-      user.chatRooms.push({ room: room, name: data.name });
-      user.save();
-
-      data.user.forEach(async (u) => {
-        const otherUser = await User.findById(u).select("chatRooms");
-        otherUser.chatRooms.push({ room: room, name: user.name });
-        otherUser.save();
-      });
-    });
-
-    //joining chatrooms
-    socket.on("joining_my_rooms", async (data, callback) => {
-      //  console.log(data);
-      console.log("joining rooms called");
-      data.rooms.forEach((e) => {
-        socket.join(e);
-      });
     });
 
     // Listen for chatMessage
-    socket.on("chat_message", async (data, callback) => {
-      socket
-        .to(data.roomId)
-        .emit("message", {
-          data: data,
-          fromId: socket.handshake.query.userId,
-          fromName: socket.handshake.query.name,
-        });
-
-      callback(data.body);
-
+    socket.on("message", async (data, callback) => {
+      //roomId,body,type
       const msg = await Message.create({
         body: data.body,
         room: data.roomId,
+        type: data.type,
         fromId: socket.handshake.query.userId,
-        fromName: socket.handshake.query.name,
       });
+      console.log(msg);
 
-      const room = await ChatRoom.findById(data.roomId)
+      socket.to(msg.fromId).emit("new_message", {
+        message: msg,
+      });
+      callback({ body: msg.body, id: msg.id });
+
+      const room = await ChatRoom.findById(msg.room)
         .select("messages users")
         .populate({ path: "users", select: "messages" });
-      console.log(room.users);
+      console.log(room);
 
-      room.users.forEach((u) => {
-        if (u.id != socket.handshake.query.userId) {
+      room.users.forEach(async (u) => {
+        if (u.id != msg.fromId) {
+          io.to(u.id).emit("new_message", {
+            message: msg,
+          });
           u.messages.push(msg);
-          u.save();
+          await u.save();
         }
       });
 
       room.messages.push(msg);
-      room.save();
+      await room.save();
     });
 
     socket.on("disconnect", async (data) => {
-      const user = await User.findById(socket.handshake.query.userId);
       console.log("left-------");
+      socket.leave(data.room_id);
       user.last_seen = Date.now();
       user.messages = [];
-      user.save();
-      // socket.leave(data.room_id);
+      user.temp_chatrooms = [];
+      user.temp_connections = [];
+      await user.save();
     });
   });
 };
@@ -170,7 +171,7 @@ const socketEvents = (io) => {
 const init = (app) => {
   const server = require("http").createServer(app);
   const io = require("socket.io")(server, { serveClient: false });
-  //io.set("transports", ["websocket"]);
+  io.set("transports", ["websocket"]);
   socketEvents(io);
   return server;
 };

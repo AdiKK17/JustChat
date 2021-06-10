@@ -9,18 +9,14 @@ const messageSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: "Chatroom",
   },
-  //for 1st method
-  // to: [{
-    // type: mongoose.Schema.Types.ObjectId,
-    // ref: "User",
-  // }],
+  type: {
+    type: String,
+    default: "text", // text,audio,video,image
+  },
   fromId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "User",
     required: "sender user should not be empty",
-  },
-  fromName: {
-    type: String,
   },
   time: {
     type: Date,

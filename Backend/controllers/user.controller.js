@@ -1,8 +1,8 @@
-const User = require("../models/user");
-
 const bcrypt = require("bcryptjs");
-
 const { validationResult } = require("express-validator");
+
+const User = require("../models/user");
+const { randomString } = require("../utils/helper_functions");
 
 exports.userSignup = async (req, res, next) => {
   try {
@@ -17,11 +17,12 @@ exports.userSignup = async (req, res, next) => {
 
     const { email, name, password } = req.body;
 
-    let hashedPw = await bcrypt.hash(password, 8);
+    const hashedPw = await bcrypt.hash(password, 8);
     const user = await User.create({
       email: email,
       password: hashedPw,
       name: name,
+      uid: randomString()
     });
 
     res.status(201).json({ message: "Succesfully signed up", result: user });
@@ -35,8 +36,7 @@ exports.userSignup = async (req, res, next) => {
 
 exports.getUser = async (req, res, next) => {
   try {
-    const users = await User.findById(req.body.userId);
-
+    const user = await User.findById(req.body.userId);
     res.status(200).json({ result: user });
   } catch (err) {
     if (!err.statusCode) {

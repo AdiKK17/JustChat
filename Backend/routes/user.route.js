@@ -29,7 +29,7 @@ router.post(
   userController.userSignup
 );
 
-//POST /user/fetchUser
+//POST /user/getUser
 router.post("/getUser", userController.getUser);
 
 //GET /user/fetchUsers
